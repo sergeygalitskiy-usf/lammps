@@ -1,0 +1,34 @@
+units           metal
+atom_style      atomic
+boundary        p p f
+read_restart    sample.restart
+
+# Freeze box metrics NOW: change_box / read_data below mutate zlo/zhi/lz,
+# and equal-style variables would otherwise re-read the changed values.
+variable        zlo_old  equal $(zlo)
+variable        zhi_old  equal $(zhi)
+variable        Lsample  equal $(zhi-zlo)      # sample thickness = restart box length in z
+
+variable        fdepth   equal 5.0
+variable        N        equal 3
+variable        zhi_new  equal ${zhi_old}+${N}*${Lsample}
+
+change_box      all z final ${zlo_old} ${zhi_new} units box
+
+label           loop
+variable        i loop ${N}
+  variable      off equal ${zhi_old}+(${i}-1)*${Lsample}
+  read_data     init.data add append shift 0.0 0.0 ${off}
+  next          i
+jump            SELF loop
+
+region          rbot block INF INF INF INF ${zlo_old} $(v_zlo_old+v_fdepth) units box
+region          rtop block INF INF INF INF $(v_zhi_new-v_fdepth) ${zhi_new} units box
+group           frozen region rbot
+group           frozen region rtop
+group           mobile subtract all frozen
+
+fix             hold frozen setforce 0.0 0.0 0.0
+fix             int  mobile nve
+
+write_dump      all atom examples/extend_sim/check.lammpstrj
