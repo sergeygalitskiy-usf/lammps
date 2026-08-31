@@ -22,23 +22,46 @@ ExtendSim::~ExtendSim()
 }
 
 /* ----------------------------------------------------------------------
-   extend_sim restart <file> init <file> axis <x|y|z>
-              frozen_depth <d> new_end <coord> nreplica <N>
+   extend_sim init <file> nreplica <N>
+              [restart <file>] [axis <x|y|z>] [new_end <coord>] [frozen_depth <d>]
+
+   With 'restart', that restart file is loaded as the base system (no box
+   may exist yet). Without it, the command operates on the already-loaded
+   system. It then appends N copies of the <init> sample onto the end
+   along <axis>. N <= 0 is a no-op.
+
+   A periodic/fixed +axis face is grown with change_box before atoms are
+   added; a shrink-wrapped face is left to auto-expand inside read_data.
+   'frozen_depth' is optional and currently only range-checked against the
+   sample thickness; freezing itself is done in the input script.
 ------------------------------------------------------------------------- */
 
 void ExtendSim::command(int narg, char **arg)
 {
-  if (domain->box_exist)
-    error->all(FLERR, "extend_sim must be run before the simulation box exists");
-
   parse_args(narg, arg);
 
   const char axischar = "xyz"[axis];
 
-  // 1. load the base system from the restart file
-  input->one(fmt::format("read_restart {}", restart_file));
-  if (!domain->box_exist)
-    error->all(FLERR, "extend_sim: reading restart '{}' did not create a box", restart_file);
+  // N <= 0 -> nothing to do
+  if (nreplica <= 0) {
+    if (comm->me == 0) utils::logmesg(lmp, "extend_sim: nreplica = {}, nothing to do\n", nreplica);
+    return;
+  }
+
+  // 1. obtain the base system
+  if (restart_file) {
+    if (domain->box_exist)
+      error->all(FLERR,
+                 "extend_sim: 'restart' was given but a simulation box already exists; "
+                 "run 'clear' first or omit the restart keyword");
+    input->one(fmt::format("read_restart {}", restart_file));
+    if (!domain->box_exist)
+      error->all(FLERR, "extend_sim: reading restart '{}' did not create a box", restart_file);
+  } else if (!domain->box_exist) {
+    error->all(FLERR,
+               "extend_sim: no simulation box to extend; load a system first or pass "
+               "'restart <file>'");
+  }
 
   const double lo = domain->boxlo[axis];
   const double hi_old = domain->boxhi[axis];
@@ -51,29 +74,43 @@ void ExtendSim::command(int narg, char **arg)
     error->all(FLERR, "extend_sim: non-positive sample thickness ({:.6g}) from '{}'", zl,
                init_file);
 
+  // +axis hi boundary: 0=periodic, 1=fixed, 2/3=shrink-wrapped.
+  // Periodic/fixed boxes must be grown before atoms are added; a
+  // shrink-wrapped box re-expands on its own inside read_data add.
+  const int bhi = domain->boundary[axis][1];
+  const bool grow_box = (bhi == 0 || bhi == 1);
+
   // 3. resolve the new box end: default is exactly N stacked slabs
   const double stacked_end = hi_old + nreplica * zl;
   if (!new_end_set) new_end = stacked_end;
-  if (new_end < stacked_end - 1.0e-6)
+  if (grow_box && new_end < stacked_end - 1.0e-6)
     error->all(FLERR,
                "extend_sim: new_end ({:.6g}) is below the stacked height ({:.6g}) for "
                "{} replicas of thickness {:.6g}",
                new_end, stacked_end, nreplica, zl);
-  if (frozen_depth >= zl)
+  if (frozen_depth > 0.0 && frozen_depth >= zl)
     error->all(FLERR,
                "extend_sim: frozen_depth ({:.6g}) must be smaller than the sample "
                "thickness ({:.6g})",
                frozen_depth, zl);
 
-  if (comm->me == 0)
-    utils::logmesg(lmp,
-                   "extend_sim: sample thickness {:.6g} along {}; stacking {} replica(s) of "
-                   "'{}'; box hi {:.6g} -> {:.6g}\n",
-                   zl, axischar, nreplica, init_file, hi_old, new_end);
+  if (comm->me == 0) {
+    if (grow_box)
+      utils::logmesg(lmp,
+                     "extend_sim: sample thickness {:.6g} along {}; stacking {} replica(s) of "
+                     "'{}'; box hi {:.6g} -> {:.6g}\n",
+                     zl, axischar, nreplica, init_file, hi_old, new_end);
+    else
+      utils::logmesg(lmp,
+                     "extend_sim: sample thickness {:.6g} along {}; stacking {} replica(s) of "
+                     "'{}'; {} hi boundary shrink-wrapped, box will auto-expand\n",
+                     zl, axischar, nreplica, init_file, axischar);
+  }
 
-  // 4. grow the simulation box along the chosen axis
-  input->one(
-      fmt::format("change_box all {} final {:.16g} {:.16g} units box", axischar, lo, new_end));
+  // 4. grow the simulation box (fixed / periodic +axis face only)
+  if (grow_box)
+    input->one(
+        fmt::format("change_box all {} final {:.16g} {:.16g} units box", axischar, lo, new_end));
 
   // 5. append shifted copies: replica i bottom sits at hi_old + i*zl,
   //    correcting for the sample's own lower bound dlo
@@ -84,7 +121,7 @@ void ExtendSim::command(int narg, char **arg)
                            s[1], s[2]));
   }
 
-  // frozen-group construction (region + group) lands in es/05-frozen
+  // freezing (region / group / fix setforce) is left to the input script
 }
 
 /* ----------------------------------------------------------------------
@@ -172,14 +209,14 @@ void ExtendSim::parse_args(int narg, char **arg)
   }
 
   // ---- semantic validation ----
-  if (!restart_file) error->all(FLERR, "extend_sim: 'restart <file>' is required");
   if (!init_file) error->all(FLERR, "extend_sim: 'init <file>' is required");
-  if (nreplica < 1) error->all(FLERR, "extend_sim: nreplica must be >= 1");
-  if (frozen_depth <= 0.0) error->all(FLERR, "extend_sim: frozen_depth must be > 0");
+  if (nreplica < 0) error->all(FLERR, "extend_sim: nreplica cannot be negative");
+  if (frozen_depth < 0.0) error->all(FLERR, "extend_sim: frozen_depth cannot be negative");
 
   if (comm->me == 0)
     utils::logmesg(lmp,
-                   "extend_sim args: restart={} init={} axis={} frozen_depth={:.6g} "
+                   "extend_sim args: base={} init={} axis={} frozen_depth={:.6g} "
                    "new_end={:.6g} nreplica={}\n",
-                   restart_file, init_file, "xyz"[axis], frozen_depth, new_end, nreplica);
+                   restart_file ? restart_file : "(current system)", init_file, "xyz"[axis],
+                   frozen_depth, new_end, nreplica);
 }

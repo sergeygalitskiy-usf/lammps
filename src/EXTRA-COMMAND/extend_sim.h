@@ -20,7 +20,7 @@ class ExtendSim : public Command {
   double frozen_depth = 0.0;
   double new_end = 0.0;
   bool new_end_set = false;
-  int nreplica = 1;
+  int nreplica = 0;
 
   void parse_args(int, char **);
   void data_file_extent(const char *file, int dim, double &lo, double &hi);
