@@ -19,9 +19,11 @@ class ExtendSim : public Command {
   int axis = 2;    // 0=x 1=y 2=z
   double frozen_depth = 0.0;
   double new_end = 0.0;
+  bool new_end_set = false;
   int nreplica = 1;
 
   void parse_args(int, char **);
+  void data_file_extent(const char *file, int dim, double &lo, double &hi);
 };
 }    // namespace LAMMPS_NS
 #endif
