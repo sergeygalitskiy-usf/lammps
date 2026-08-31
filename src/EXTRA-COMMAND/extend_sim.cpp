@@ -23,7 +23,8 @@ ExtendSim::~ExtendSim()
 
 /* ----------------------------------------------------------------------
    extend_sim init <file> nreplica <N>
-              [restart <file>] [axis <x|y|z>] [new_end <coord>] [frozen_depth <d>]
+              [restart <file>] [axis <x|y|z>] [new_end <coord>]
+              [gap <d>] [frozen_depth <d>]
 
    With 'restart', that restart file is loaded as the base system (no box
    may exist yet). Without it, the command operates on the already-loaded
@@ -32,6 +33,9 @@ ExtendSim::~ExtendSim()
 
    A periodic/fixed +axis face is grown with change_box before atoms are
    added; a shrink-wrapped face is left to auto-expand inside read_data.
+   'gap' inserts empty space below the first appended slab -- use it when
+   stacking onto a non-periodic surface so the new slab does not overlap
+   the existing surface layer (default 0 = seamless periodic tiling).
    'frozen_depth' is optional and currently only range-checked against the
    sample thickness; freezing itself is done in the input script.
 ------------------------------------------------------------------------- */
@@ -80,8 +84,8 @@ void ExtendSim::command(int narg, char **arg)
   const int bhi = domain->boundary[axis][1];
   const bool grow_box = (bhi == 0 || bhi == 1);
 
-  // 3. resolve the new box end: default is exactly N stacked slabs
-  const double stacked_end = hi_old + nreplica * zl;
+  // 3. resolve the new box end: default is gap + N stacked slabs
+  const double stacked_end = hi_old + gap + nreplica * zl;
   if (!new_end_set) new_end = stacked_end;
   if (grow_box && new_end < stacked_end - 1.0e-6)
     error->all(FLERR,
@@ -116,7 +120,7 @@ void ExtendSim::command(int narg, char **arg)
   //    correcting for the sample's own lower bound dlo
   for (int i = 0; i < nreplica; ++i) {
     double s[3] = {0.0, 0.0, 0.0};
-    s[axis] = (hi_old - dlo) + i * zl;
+    s[axis] = (hi_old - dlo) + gap + i * zl;
     input->one(fmt::format("read_data {} add append shift {:.16g} {:.16g} {:.16g}", init_file, s[0],
                            s[1], s[2]));
   }
@@ -198,6 +202,11 @@ void ExtendSim::parse_args(int narg, char **arg)
       new_end_set = true;
       iarg += 2;
 
+    } else if (strcmp(arg[iarg], "gap") == 0) {
+      if (iarg + 2 > narg) utils::missing_cmd_args(FLERR, "extend_sim gap", error);
+      gap = utils::numeric(FLERR, arg[iarg + 1], false, lmp);
+      iarg += 2;
+
     } else if (strcmp(arg[iarg], "nreplica") == 0) {
       if (iarg + 2 > narg) utils::missing_cmd_args(FLERR, "extend_sim nreplica", error);
       nreplica = utils::inumeric(FLERR, arg[iarg + 1], false, lmp);
@@ -211,6 +220,7 @@ void ExtendSim::parse_args(int narg, char **arg)
   // ---- semantic validation ----
   if (!init_file) error->all(FLERR, "extend_sim: 'init <file>' is required");
   if (nreplica < 0) error->all(FLERR, "extend_sim: nreplica cannot be negative");
+  if (gap < 0.0) error->all(FLERR, "extend_sim: gap cannot be negative");
   if (frozen_depth < 0.0) error->all(FLERR, "extend_sim: frozen_depth cannot be negative");
 
   if (comm->me == 0)

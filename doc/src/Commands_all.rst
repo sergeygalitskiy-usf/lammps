@@ -42,6 +42,7 @@ An alphabetic list of general LAMMPS commands.
    * :doc:`dump <dump>`
    * :doc:`dump_modify <dump_modify>`
    * :doc:`echo <echo>`
+   * :doc:`extend_sim <extend_sim>`
    * :doc:`fix <fix>`
    * :doc:`fix_modify <fix_modify>`
    * :doc:`geturl <geturl>`

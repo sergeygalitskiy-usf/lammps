@@ -1,0 +1,27 @@
+extend_sim examples
+===================
+
+extend_sim appends N copies of a reference sample (a LAMMPS data file)
+onto the high end of the box along one axis.  See doc/extend_sim for the
+full description.  All three scripts build their own sample.data with
+lattice / create_atoms + write_data, so no external files are needed.
+Requires the EXTRA-COMMAND package (and SHOCK for in.extend_sim.shock).
+
+  in.prototype              pure input-script version of the algorithm,
+                            kept as a reference (no extend_sim command)
+
+  in.extend_sim.append      operate on the already-loaded system; a
+                            periodic +z face is grown with change_box
+                            and 3 sample copies are stacked -> 4x atoms
+
+  in.extend_sim.restart     use the 'restart' keyword: build base.restart,
+                            clear, then rebuild it extended by 2 slabs
+
+  in.extend_sim.shock       wall/piston shock into a shrink-wrapped slab;
+                            one slab appended after each batch of steps so
+                            the box stays ahead of the wave (no change_box)
+
+Run, e.g.:
+
+  lmp -in in.extend_sim.append
+  mpirun -np 4 lmp -in in.extend_sim.shock
