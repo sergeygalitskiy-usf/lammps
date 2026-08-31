@@ -20,6 +20,7 @@ class ExtendSim : public Command {
   double frozen_depth = 0.0;
   double new_end = 0.0;
   bool new_end_set = false;
+  double gap = 0.0;    // spacing inserted below the first appended slab
   int nreplica = 0;
 
   void parse_args(int, char **);

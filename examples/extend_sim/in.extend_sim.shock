@@ -1,0 +1,46 @@
+# extend_sim example 3: piston shock with ON-THE-FLY extension
+#
+# A wall/piston drives +z into a shrink-wrapped slab.  After every batch
+# of steps a fresh sample slab is appended ahead of the shock, so the box
+# grows to stay ahead of the wave.  Because the +z face is shrink-wrapped,
+# extend_sim issues no change_box -- the box auto-expands inside read_data.
+#
+# The growth face carries a real surface layer, so 'gap' is used to keep
+# the appended slab from overlapping it (~one fcc interlayer).
+
+units        lj
+atom_style   atomic
+boundary     p p s                 # zlo shrink-wrapped -> required by fix wall/piston
+
+lattice      fcc 0.8442
+region       box block 0 4 0 4 0 12
+create_box   1 box
+create_atoms 1 box
+mass         1 1.0
+
+pair_style   lj/cut 2.5
+pair_coeff   1 1 1.0 1.0
+write_data   sample.data nocoeff
+
+velocity     all create 0.05 12345 mom yes
+
+variable     Niter  equal 3
+variable     Nsteps equal 400
+
+fix nve  all nve
+fix pist all wall/piston zlo pos 0.0 vel 0.15 units box   # stays on across iterations
+
+thermo       100
+thermo_style custom step temp pe zlo zhi atoms
+dump         d1 all atom 400 shock.lammpstrj
+
+label loop
+variable it loop ${Niter}
+  print ">>> iteration ${it}: atoms $(atoms), zhi $(zhi:%.3f)"
+  run ${Nsteps}
+  extend_sim init sample.data axis z nreplica 1 gap 1.0
+  next it
+jump SELF loop
+
+write_dump all atom shock_extended.lammpstrj
+print "final: atoms $(atoms), box z $(zlo:%.3f):$(zhi:%.3f)"

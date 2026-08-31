@@ -33,6 +33,7 @@ Commands
    displace_atoms
    dynamical_matrix
    echo
+   extend_sim
    fenix
    fix
    fix_modify
