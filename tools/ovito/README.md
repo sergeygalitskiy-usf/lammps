@@ -54,15 +54,19 @@ Point the first argument at a **directory**; the driver polls it and
 renders each frame as soon as all its rank files are present and stable:
 
 ```
-ovitos render_driver.py dump/ -o 'frames/view1_XZ.{step}.png' \
-       --range -7 -5 --width 3000 --nproc 4 --until 4000 --idle 30
+ovitos render_driver.py dump/ -o 'frames/{view}.{step}.png' \
+       --views view1_XZ,view2_YZ --range -7 -5 --width 3000 \
+       --nproc 4 --until 4000 --idle 30
 ```
 
-`{step}` in `-o` is required.  One worker pool is reused across frames.
-Stops on `--until <step>` or after `--idle` seconds with no new frame.
+`{step}` in `-o` is required in watch mode; `{view}` is required with
+more than one `--views`.  One worker pool is reused across frames and
+views.  The box is read once per frame; each view is culled
+independently.  Stops on `--until <step>` or after `--idle` seconds
+with no new frame.
 
-`example/run.sh` runs `mpirun lmp -in in.shock` and the watcher together,
-then `ffmpeg`s `frames/*.png` into `view1_XZ.mp4`.
+`example/run.sh` runs `mpirun lmp -in in.shock` and the watcher
+together, then `ffmpeg`s each view's frames into an mp4.
 
-Remaining: View abstraction + view2_YZ (ov/07), tilted 3-D views +
-depth compositing (ov/08), docs (ov/09).
+Remaining: tilted 3-D views (view3/view4) + depth-ordered compositing
+(ov/08), docs page (ov/09).
