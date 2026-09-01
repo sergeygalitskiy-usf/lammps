@@ -26,7 +26,9 @@ import argparse
 import glob
 import multiprocessing
 import os
+import re
 import tempfile
+import time
 from dataclasses import replace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -77,7 +79,7 @@ def _render_worker(task):
 
 def render_frame(rank_files, out_path, view="view1_XZ", prop="c_PE_All",
                  crange=(-9.0, -6.5), width=5000, zrange=None, radius=0.5,
-                 keep_parts=False, occlude=False, pad=0.0, nproc=1):
+                 keep_parts=False, occlude=False, pad=0.0, nproc=1, pool=None):
     rank_files = sorted(rank_files)
     if not rank_files:
         raise SystemExit("no dump files matched")
@@ -98,13 +100,14 @@ def render_frame(rank_files, out_path, view="view1_XZ", prop="c_PE_All",
         return W, H, 0
 
     tasks = [(f, params, prop, tuple(crange), radius) for f in keep]
-    nproc = max(1, min(nproc, len(tasks)))
-    if nproc == 1:
+    if pool is not None:
+        arrays = pool.map(_render_worker, tasks)
+    elif max(1, min(nproc, len(tasks))) == 1:
         arrays = [_render_worker(t) for t in tasks]
     else:
         ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(nproc) as pool:
-            arrays = pool.map(_render_worker, tasks)
+        with ctx.Pool(min(nproc, len(tasks))) as p:
+            arrays = p.map(_render_worker, tasks)
 
     merged = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     for f, arr in zip(keep, arrays):
@@ -116,10 +119,86 @@ def render_frame(rank_files, out_path, view="view1_XZ", prop="c_PE_All",
     return W, H, len(arrays)
 
 
+_FRAME_RE = re.compile(r"^(?P<prefix>.+)\.(?P<rank>\d+)\.(?P<step>\d+)$")
+
+
+def scan_frames(dumpdir):
+    """{step: [rank_files]} for files named  <prefix>.<rank>.<step>  in dumpdir."""
+    frames = {}
+    for name in os.listdir(dumpdir):
+        m = _FRAME_RE.match(name)
+        if m:
+            frames.setdefault(int(m["step"]), []).append(os.path.join(dumpdir, name))
+    return frames
+
+
+def _stable(files, sizes):
+    """True if every file's size is unchanged since the sizes dict was last filled."""
+    ok = True
+    for f in files:
+        try:
+            s = os.path.getsize(f)
+        except OSError:
+            return False
+        ok = ok and sizes.get(f) == s
+        sizes[f] = s
+    return ok
+
+
+def watch(dumpdir, out_tmpl, nranks=None, interval=2.0, idle=60.0, until=None,
+          nproc=1, **frame_kw):
+    """Render each new complete+stable frame as it appears in dumpdir."""
+    if "{step}" not in out_tmpl:
+        raise SystemExit("watch mode needs '{step}' in -o, e.g. -o 'frames/v1.{step}.png'")
+    os.makedirs(os.path.dirname(out_tmpl) or ".", exist_ok=True)
+
+    ctx = multiprocessing.get_context("spawn")
+    pool = ctx.Pool(nproc) if nproc > 1 else None
+    done, sizes, last_new = set(), {}, time.time()
+    print(f"watching {dumpdir}  (interval {interval}s, idle stop {idle}s)")
+    try:
+        while True:
+            frames = scan_frames(dumpdir)
+            if nranks is None and frames:
+                nranks = max(len(v) for v in frames.values())
+                print(f"  inferred nranks = {nranks}")
+            progressed = False
+            for step in sorted(frames):
+                if step in done or (until is not None and step > until):
+                    continue
+                files = frames[step]
+                if nranks and len(files) < nranks:
+                    continue
+                if not _stable(files, sizes):
+                    continue
+                out = out_tmpl.format(step=step)
+                t0 = time.time()
+                print(f"[step {step}] {len(files)} rank files -> {out}")
+                w, h, n = render_frame(files, out, nproc=nproc, pool=pool, **frame_kw)
+                print(f"  {w}x{h}  {n} rendered  {time.time()-t0:.1f}s")
+                done.add(step)
+                progressed = True
+            now = time.time()
+            if progressed:
+                last_new = now
+            elif now - last_new > idle:
+                print("idle timeout, stopping")
+                break
+            if until is not None and done and max(done) >= until:
+                print(f"reached step {until}, stopping")
+                break
+            time.sleep(interval)
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
+    return sorted(done)
+
+
 def main():
     ap = argparse.ArgumentParser(description="render LAMMPS per-rank dump(s) to an XZ image")
-    ap.add_argument("dumps", help="one dump file, or a glob for a frame's rank files "
-                                  "(quote it, e.g. 'dump.*.1000')")
+    ap.add_argument("dumps", help="a dump file / glob for one frame, OR a directory to watch "
+                                  "(quote globs, e.g. 'dump.*.1000')")
     ap.add_argument("-o", "--out", default="view1_XZ.png")
     ap.add_argument("--view", default="view1_XZ", choices=sorted(VIEWS))
     ap.add_argument("--width", type=int, default=5000, help="image width in px (z horizontal)")
@@ -135,13 +214,26 @@ def main():
                     help="also drop ranks fully hidden behind another (optically thick)")
     ap.add_argument("--pad", type=float, default=0.0,
                     help="slack (box units) for the occlusion footprint test")
+    ap.add_argument("--nranks", type=int, default=None,
+                    help="watch mode: expected rank-file count per frame (else inferred)")
+    ap.add_argument("--interval", type=float, default=2.0, help="watch mode: poll seconds")
+    ap.add_argument("--idle", type=float, default=60.0,
+                    help="watch mode: stop after this many seconds with no new frame")
+    ap.add_argument("--until", type=int, default=None, help="watch mode: stop after this step")
     a = ap.parse_args()
 
-    files = glob.glob(a.dumps) if any(c in a.dumps for c in "*?[") else [a.dumps]
-    w, h, n = render_frame(files, a.out, a.view, a.prop, tuple(a.range), a.width,
-                           tuple(a.zrange) if a.zrange else None, a.radius, a.keep_parts,
-                           a.occlude, a.pad, a.nproc)
-    print(f"wrote {a.out}  {w}x{h} px  from {n} rank file(s)")
+    frame_kw = dict(view=a.view, prop=a.prop, crange=tuple(a.range), width=a.width,
+                    zrange=tuple(a.zrange) if a.zrange else None, radius=a.radius,
+                    keep_parts=a.keep_parts, occlude=a.occlude, pad=a.pad)
+
+    if os.path.isdir(a.dumps):
+        steps = watch(a.dumps, a.out, nranks=a.nranks, interval=a.interval, idle=a.idle,
+                      until=a.until, nproc=a.nproc, **frame_kw)
+        print(f"done: {len(steps)} frames")
+    else:
+        files = glob.glob(a.dumps) if any(c in a.dumps for c in "*?[") else [a.dumps]
+        w, h, n = render_frame(files, a.out, nproc=a.nproc, **frame_kw)
+        print(f"wrote {a.out}  {w}x{h} px  from {n} rank file(s)")
 
 
 if __name__ == "__main__":

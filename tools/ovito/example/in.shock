@@ -1,0 +1,24 @@
+# LJ piston shock that writes per-rank dumps for the OVITO render driver.
+# Run alongside render_driver.py in watch mode (see run.sh).
+
+units       lj
+atom_style  atomic
+boundary    p p s
+
+lattice     fcc 0.8442
+region      box block 0 6 0 6 0 60
+create_box  1 box
+create_atoms 1 box
+mass        1 1.0
+
+pair_style  lj/cut 2.5
+pair_coeff  1 1 1.0 1.0
+velocity    all create 0.05 12345 mom yes
+
+compute     PE_All all pe/atom
+fix         nve all nve
+fix         pist all wall/piston zlo pos 0.0 vel 0.25 units box
+
+thermo      200
+dump        d1 all custom 200 dump/cfg.%.*  id type x y z c_PE_All
+run         4000
