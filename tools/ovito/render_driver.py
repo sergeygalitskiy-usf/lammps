@@ -34,6 +34,7 @@ from ovito.vis import TachyonRenderer
 from PIL import Image
 
 from camera import VIEWS, camera_params, make_viewport
+from cull import visible
 
 # LAMMPS 'dump custom id type x y z c_PE_All' -> OVITO property names
 DUMP_COLUMNS = [
@@ -62,7 +63,7 @@ def render_rank(dump_path, out_png, size, vp, prop, crange, radius):
 
 def render_frame(rank_files, out_path, view="view1_XZ", prop="c_PE_All",
                  crange=(-9.0, -6.5), width=5000, zrange=None, radius=0.5,
-                 keep_parts=False):
+                 keep_parts=False, occlude=False, pad=0.0):
     rank_files = sorted(rank_files)
     if not rank_files:
         raise SystemExit("no dump files matched")
@@ -76,8 +77,12 @@ def render_frame(rank_files, out_path, view="view1_XZ", prop="c_PE_All",
     vp = make_viewport(params)
     W, H = params["size"]
 
+    keep, stats = visible(rank_files, v, params, occlude=occlude, pad=pad)
+    print(f"  culled: {stats['empty']} empty, {stats['frustum']} out-of-view, "
+          f"{stats['occluded']} occluded -> {stats['kept']}/{len(rank_files)} rendered")
+
     parts = []
-    for f in rank_files:
+    for f in keep:
         p = f"{out_path}.part.{os.path.basename(f)}.png"
         render_rank(f, p, (W, H), vp, prop, crange, radius)
         parts.append(p)
@@ -90,7 +95,7 @@ def render_frame(rank_files, out_path, view="view1_XZ", prop="c_PE_All",
     if not keep_parts:
         for p in parts:
             os.remove(p)
-    return W, H, len(rank_files)
+    return W, H, len(parts)
 
 
 def main():
@@ -106,11 +111,16 @@ def main():
                     help="fixed horizontal z-range; default 0 .. 1.2*zmax")
     ap.add_argument("--radius", type=float, default=0.5)
     ap.add_argument("--keep-parts", action="store_true", help="do not delete per-rank PNGs")
+    ap.add_argument("--occlude", action="store_true",
+                    help="also drop ranks fully hidden behind another (optically thick)")
+    ap.add_argument("--pad", type=float, default=0.0,
+                    help="slack (box units) for the occlusion footprint test")
     a = ap.parse_args()
 
     files = glob.glob(a.dumps) if any(c in a.dumps for c in "*?[") else [a.dumps]
     w, h, n = render_frame(files, a.out, a.view, a.prop, tuple(a.range), a.width,
-                           tuple(a.zrange) if a.zrange else None, a.radius, a.keep_parts)
+                           tuple(a.zrange) if a.zrange else None, a.radius, a.keep_parts,
+                           a.occlude, a.pad)
     print(f"wrote {a.out}  {w}x{h} px  from {n} rank file(s)")
 
 
