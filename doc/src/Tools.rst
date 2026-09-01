@@ -74,6 +74,7 @@ Post-processing tools
    * :ref:`lmp2arc <arc>`
    * :ref:`lmp2cfg <cfg>`
    * :ref:`matlab <matlab>`
+   * :ref:`ovito on-the-fly <ovito_onfly>`
    * :ref:`phonon <phonon>`
    * :ref:`pymol_asphere <pymol>`
    * :ref:`python <pythontools>`
@@ -782,6 +783,29 @@ dependencies and redirects the download to the local cache.
    make -j 8
 
    deactivate_caches
+
+----------
+
+.. _ovito_onfly:
+
+ovito on-the-fly rendering tool
+------------------------------
+
+The ``tools/ovito`` directory contains ``render_driver.py``, an
+out-of-process renderer for the per-MPI-rank dump files LAMMPS writes
+with a ``%`` in the :doc:`dump <dump>` filename.  A separate OVITO
+Python process (the bundled ``ovitos`` interpreter, or a clean conda /
+venv install of the ``ovito`` module) reads each rank's file, culls
+ranks that fall outside the view or are hidden behind another in an
+optically thick system, renders the survivors in parallel with a shared
+camera, and alpha-composites the transparent parts into one image per
+view.  In *watch* mode it polls the dump directory and renders each
+frame as its rank files appear, so images accumulate while the run is
+still going.  It is aimed at shock simulations that grow long along one
+axis (see :doc:`fix wall/piston <fix_wall_piston>` and
+:doc:`extend_sim <extend_sim>`).
+
+See the README file in the tools/ovito directory.
 
 ----------
 
