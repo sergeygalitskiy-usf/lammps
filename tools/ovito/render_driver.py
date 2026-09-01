@@ -77,37 +77,34 @@ def _render_worker(task):
     return arr
 
 
-def render_frame(rank_files, out_path, view="view1_XZ", prop="c_PE_All",
-                 crange=(-9.0, -6.5), width=5000, zrange=None, radius=0.5,
-                 keep_parts=False, occlude=False, pad=0.0, nproc=1, pool=None):
-    rank_files = sorted(rank_files)
-    if not rank_files:
-        raise SystemExit("no dump files matched")
+def _map(tasks, nproc, pool):
+    if pool is not None:
+        return pool.map(_render_worker, tasks)
+    if max(1, min(nproc, len(tasks))) == 1:
+        return [_render_worker(t) for t in tasks]
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(min(nproc, len(tasks))) as p:
+        return p.map(_render_worker, tasks)
 
+
+def render_one_view(rank_files, box, out_path, view, prop="c_PE_All",
+                    crange=(-9.0, -6.5), width=5000, zrange=None, radius=0.5,
+                    keep_parts=False, occlude=False, pad=0.0, nproc=1, pool=None):
     v = VIEWS[view]
     if width:
         v = replace(v, width_px=width)
-    # camera from the first file's global box (identical in every rank file)
-    box = import_file(rank_files[0], columns=DUMP_COLUMNS).compute().cell[...]
     params = camera_params(v, box, horiz_range=zrange)
     W, H = params["size"]
 
-    keep, stats = visible(rank_files, v, params, occlude=occlude, pad=pad)
-    print(f"  culled: {stats['empty']} empty, {stats['frustum']} out-of-view, "
-          f"{stats['occluded']} occluded -> {stats['kept']}/{len(rank_files)} rendered")
+    keep, st = visible(rank_files, v, params, occlude=occlude, pad=pad)
+    print(f"  [{view}] cull: {st['empty']} empty, {st['frustum']} out-of-view, "
+          f"{st['occluded']} occluded -> {st['kept']}/{len(rank_files)}")
     if not keep:
         Image.new("RGBA", (W, H), (0, 0, 0, 0)).save(out_path)
         return W, H, 0
 
     tasks = [(f, params, prop, tuple(crange), radius) for f in keep]
-    if pool is not None:
-        arrays = pool.map(_render_worker, tasks)
-    elif max(1, min(nproc, len(tasks))) == 1:
-        arrays = [_render_worker(t) for t in tasks]
-    else:
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(min(nproc, len(tasks))) as p:
-            arrays = p.map(_render_worker, tasks)
+    arrays = _map(tasks, nproc, pool)
 
     merged = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     for f, arr in zip(keep, arrays):
@@ -117,6 +114,21 @@ def render_frame(rank_files, out_path, view="view1_XZ", prop="c_PE_All",
         merged = Image.alpha_composite(merged, part)
     merged.save(out_path)
     return W, H, len(arrays)
+
+
+def render_views(rank_files, out_tmpl, step=0, views=("view1_XZ",), **kw):
+    """Render every requested view of one frame.  out_tmpl may use {view} and {step}."""
+    rank_files = sorted(rank_files)
+    if not rank_files:
+        raise SystemExit("no dump files matched")
+    if len(views) > 1 and "{view}" not in out_tmpl:
+        raise SystemExit("multiple --views need '{view}' in -o")
+    # global box: read once, shared by every view
+    box = import_file(rank_files[0], columns=DUMP_COLUMNS).compute().cell[...]
+    for vname in views:
+        out = out_tmpl.format(view=vname, step=step)
+        render_one_view(rank_files, box, out, vname, **kw)
+    return len(views)
 
 
 _FRAME_RE = re.compile(r"^(?P<prefix>.+)\.(?P<rank>\d+)\.(?P<step>\d+)$")
@@ -145,11 +157,11 @@ def _stable(files, sizes):
     return ok
 
 
-def watch(dumpdir, out_tmpl, nranks=None, interval=2.0, idle=60.0, until=None,
-          nproc=1, **frame_kw):
+def watch(dumpdir, out_tmpl, views=("view1_XZ",), nranks=None, interval=2.0,
+          idle=60.0, until=None, nproc=1, **frame_kw):
     """Render each new complete+stable frame as it appears in dumpdir."""
     if "{step}" not in out_tmpl:
-        raise SystemExit("watch mode needs '{step}' in -o, e.g. -o 'frames/v1.{step}.png'")
+        raise SystemExit("watch mode needs '{step}' in -o, e.g. -o 'frames/{view}.{step}.png'")
     os.makedirs(os.path.dirname(out_tmpl) or ".", exist_ok=True)
 
     ctx = multiprocessing.get_context("spawn")
@@ -171,11 +183,11 @@ def watch(dumpdir, out_tmpl, nranks=None, interval=2.0, idle=60.0, until=None,
                     continue
                 if not _stable(files, sizes):
                     continue
-                out = out_tmpl.format(step=step)
                 t0 = time.time()
-                print(f"[step {step}] {len(files)} rank files -> {out}")
-                w, h, n = render_frame(files, out, nproc=nproc, pool=pool, **frame_kw)
-                print(f"  {w}x{h}  {n} rendered  {time.time()-t0:.1f}s")
+                print(f"[step {step}] {len(files)} rank files, {len(views)} view(s)")
+                render_views(files, out_tmpl, step=step, views=views,
+                             nproc=nproc, pool=pool, **frame_kw)
+                print(f"  {time.time()-t0:.1f}s")
                 done.add(step)
                 progressed = True
             now = time.time()
@@ -199,8 +211,10 @@ def main():
     ap = argparse.ArgumentParser(description="render LAMMPS per-rank dump(s) to an XZ image")
     ap.add_argument("dumps", help="a dump file / glob for one frame, OR a directory to watch "
                                   "(quote globs, e.g. 'dump.*.1000')")
-    ap.add_argument("-o", "--out", default="view1_XZ.png")
-    ap.add_argument("--view", default="view1_XZ", choices=sorted(VIEWS))
+    ap.add_argument("-o", "--out", default="{view}.{step}.png",
+                    help="output path; may use {view} and {step}")
+    ap.add_argument("--views", default="view1_XZ",
+                    help="comma list from: " + ",".join(sorted(VIEWS)))
     ap.add_argument("--width", type=int, default=5000, help="image width in px (z horizontal)")
     ap.add_argument("--prop", default="c_PE_All")
     ap.add_argument("--range", nargs=2, type=float, default=[-9.0, -6.5], metavar=("LO", "HI"))
@@ -222,18 +236,25 @@ def main():
     ap.add_argument("--until", type=int, default=None, help="watch mode: stop after this step")
     a = ap.parse_args()
 
-    frame_kw = dict(view=a.view, prop=a.prop, crange=tuple(a.range), width=a.width,
+    views = tuple(v.strip() for v in a.views.split(",") if v.strip())
+    bad = [v for v in views if v not in VIEWS]
+    if bad:
+        ap.error(f"unknown view(s): {bad}; choose from {sorted(VIEWS)}")
+
+    frame_kw = dict(prop=a.prop, crange=tuple(a.range), width=a.width,
                     zrange=tuple(a.zrange) if a.zrange else None, radius=a.radius,
                     keep_parts=a.keep_parts, occlude=a.occlude, pad=a.pad)
 
     if os.path.isdir(a.dumps):
-        steps = watch(a.dumps, a.out, nranks=a.nranks, interval=a.interval, idle=a.idle,
-                      until=a.until, nproc=a.nproc, **frame_kw)
-        print(f"done: {len(steps)} frames")
+        steps = watch(a.dumps, a.out, views=views, nranks=a.nranks, interval=a.interval,
+                      idle=a.idle, until=a.until, nproc=a.nproc, **frame_kw)
+        print(f"done: {len(steps)} frames x {len(views)} view(s)")
     else:
         files = glob.glob(a.dumps) if any(c in a.dumps for c in "*?[") else [a.dumps]
-        w, h, n = render_frame(files, a.out, nproc=a.nproc, **frame_kw)
-        print(f"wrote {a.out}  {w}x{h} px  from {n} rank file(s)")
+        m = _FRAME_RE.match(os.path.basename(files[0]))
+        step = int(m["step"]) if m else 0
+        render_views(files, a.out, step=step, views=views, nproc=a.nproc, **frame_kw)
+        print(f"wrote {len(views)} view(s)")
 
 
 if __name__ == "__main__":
