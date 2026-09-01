@@ -43,21 +43,15 @@ from PIL import Image
 from camera import VIEWS, camera_params, make_viewport
 from cull import visible
 
-# LAMMPS 'dump custom id type x y z c_PE_All' -> OVITO property names
-DUMP_COLUMNS = [
-    "Particle Identifier",
-    "Particle Type",
-    "Position.X",
-    "Position.Y",
-    "Position.Z",
-    "c_PE_All",
-]
+# OVITO auto-maps LAMMPS dump columns: 'id type x y z ... c_foo' ->
+# Particle Identifier / Particle Type / Position / ... / c_foo  (compute
+# names are lower-cased, so 'c_PE_All' -> property 'c_pe_all').
 
 
 def _render_worker(task):
     """Render one rank file -> (H, W, 4) uint8 RGBA array.  Picklable / spawn-safe."""
     dump_path, params, prop, crange, radius = task
-    pipeline = import_file(dump_path, columns=DUMP_COLUMNS)
+    pipeline = import_file(dump_path)
     pipeline.source.data.particles_.vis.radius = radius
     pipeline.source.data.cell_.vis.enabled = False
     pipeline.modifiers.append(ColorCodingModifier(
@@ -87,7 +81,7 @@ def _map(tasks, nproc, pool):
         return p.map(_render_worker, tasks)
 
 
-def render_one_view(rank_files, box, out_path, view, prop="c_PE_All",
+def render_one_view(rank_files, box, out_path, view, prop="c_pe_all",
                     crange=(-9.0, -6.5), width=5000, zrange=None, radius=0.5,
                     keep_parts=False, occlude=False, pad=0.0, nproc=1, pool=None):
     v = VIEWS[view]
@@ -124,7 +118,7 @@ def render_views(rank_files, out_tmpl, step=0, views=("view1_XZ",), **kw):
     if len(views) > 1 and "{view}" not in out_tmpl:
         raise SystemExit("multiple --views need '{view}' in -o")
     # global box: read once, shared by every view
-    box = import_file(rank_files[0], columns=DUMP_COLUMNS).compute().cell[...]
+    box = import_file(rank_files[0]).compute().cell[...]
     for vname in views:
         out = out_tmpl.format(view=vname, step=step)
         render_one_view(rank_files, box, out, vname, **kw)
@@ -216,7 +210,8 @@ def main():
     ap.add_argument("--views", default="view1_XZ",
                     help="comma list from: " + ",".join(sorted(VIEWS)))
     ap.add_argument("--width", type=int, default=5000, help="image width in px (z horizontal)")
-    ap.add_argument("--prop", default="c_PE_All")
+    ap.add_argument("--prop", default="c_pe_all",
+                    help="OVITO property to colour by; LAMMPS compute names are lower-cased")
     ap.add_argument("--range", nargs=2, type=float, default=[-9.0, -6.5], metavar=("LO", "HI"))
     ap.add_argument("--zrange", nargs=2, type=float, default=None, metavar=("Z0", "Z1"),
                     help="fixed horizontal z-range; default 0 .. 1.2*zmax")
