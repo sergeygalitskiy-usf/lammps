@@ -44,9 +44,25 @@ ovitos render_driver.py 'dump.*.1000' -o view1_XZ.1000.png \
 * image horizontal = +z (shock axis), vertical = +x
 * height = width * Lx / (z1 - z0)
 * z-range defaults to 0 .. 1.2*zmax; override with `--zrange Z0 Z1`
-* each rank -> transparent `<out>.part.<name>.png` (keep with `--keep-parts`),
-  then alpha-composited into `<out>`
+  (needed for a movie -- otherwise a growing box changes the frame height)
+* `--nproc N` renders the surviving ranks through a spawned pool
+* `--occlude [--pad D]` also drops ranks hidden behind another
 
-Later tasks: deterministic camera module (ov/03), culling (ov/04),
-parallel driver (ov/05), on-the-fly polling (ov/06), more views
-(ov/07-08), docs (ov/09).
+## on-the-fly (watch mode)
+
+Point the first argument at a **directory**; the driver polls it and
+renders each frame as soon as all its rank files are present and stable:
+
+```
+ovitos render_driver.py dump/ -o 'frames/view1_XZ.{step}.png' \
+       --range -7 -5 --width 3000 --nproc 4 --until 4000 --idle 30
+```
+
+`{step}` in `-o` is required.  One worker pool is reused across frames.
+Stops on `--until <step>` or after `--idle` seconds with no new frame.
+
+`example/run.sh` runs `mpirun lmp -in in.shock` and the watcher together,
+then `ffmpeg`s `frames/*.png` into `view1_XZ.mp4`.
+
+Remaining: View abstraction + view2_YZ (ov/07), tilted 3-D views +
+depth compositing (ov/08), docs (ov/09).
